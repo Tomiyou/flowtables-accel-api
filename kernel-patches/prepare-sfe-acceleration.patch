@@ -1,0 +1,61 @@
+--- a/net/core/dev.c
++++ b/net/core/dev.c
+@@ -3594,8 +3594,13 @@ static int xmit_one(struct sk_buff *skb,
+ 	unsigned int len;
+ 	int rc;
+ 
+-	if (dev_nit_active(dev))
+-		dev_queue_xmit_nit(skb, dev);
++	/* If this skb has been fast forwarded then we don't want it to
++	 * go to any taps (by definition we're trying to bypass them).
++	 */
++	if (unlikely(!skb->fast_forwarded)) {
++		if (dev_nit_active(dev))
++			dev_queue_xmit_nit(skb, dev);
++	}
+ 
+ 	len = skb->len;
+ 	PRANDOM_ADD_NOISE(skb, dev, txq, len + jiffies);
+@@ -5221,6 +5226,9 @@ void netdev_rx_handler_unregister(struct
+ }
+ EXPORT_SYMBOL_GPL(netdev_rx_handler_unregister);
+ 
++int (*athrs_fast_nat_recv)(struct sk_buff *skb) __rcu __read_mostly;
++EXPORT_SYMBOL_GPL(athrs_fast_nat_recv);
++
+ /*
+  * Limit the use of PFMEMALLOC reserves to those protocols that implement
+  * the special handling of PFMEMALLOC skbs.
+@@ -5268,6 +5276,7 @@ static int __netif_receive_skb_core(stru
+ 	bool deliver_exact = false;
+ 	int ret = NET_RX_DROP;
+ 	__be16 type;
++	int (*fast_recv)(struct sk_buff *skb);
+ 
+ 	net_timestamp_check(!READ_ONCE(netdev_tstamp_prequeue), skb);
+ 
+@@ -5299,6 +5308,14 @@ another_round:
+ 			goto out;
+ 		}
+ 	}
++
++	fast_recv = rcu_dereference(athrs_fast_nat_recv);
++	if (fast_recv) {
++		if (fast_recv(skb)) {
++			ret = NET_RX_SUCCESS;
++			goto out;
++		}
++	}
+ 
+ 	if (eth_type_vlan(skb->protocol)) {
+ 		skb = skb_vlan_untag(skb);
+--- a/include/linux/skbuff.h
++++ b/include/linux/skbuff.h
+@@ -915,6 +915,7 @@ struct sk_buff {
+ #endif
+ 	__u8			slow_gro:1;
+ 	__u8			scm_io_uring:1;
++	__u8			fast_forwarded:1;
+ 
+ #ifdef CONFIG_NET_SCHED
+ 	__u16			tc_index;	/* traffic control index */

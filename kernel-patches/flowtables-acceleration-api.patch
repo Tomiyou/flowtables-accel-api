@@ -1,0 +1,240 @@
+--- a/net/netfilter/nf_flow_table_core.c
++++ b/net/netfilter/nf_flow_table_core.c
+@@ -284,6 +284,7 @@ int flow_offload_add(struct nf_flowtable
+ 	int err;
+ 
+ 	flow->timeout = nf_flowtable_time_stamp + flow_offload_get_timeout(flow);
++	printk("flow_offload_add() called\n");
+ 
+ 	err = rhashtable_insert_fast(&flow_table->rhashtable,
+ 				     &flow->tuplehash[0].node,
+@@ -301,11 +302,16 @@ int flow_offload_add(struct nf_flowtable
+ 		return err;
+ 	}
+ 
++	print_flow(flow);
++
+ 	nf_ct_offload_timeout(flow->ct);
+ 
+ 	if (nf_flowtable_hw_offload(flow_table)) {
++		printk("Doing HW offload\n");
+ 		__set_bit(NF_FLOW_HW, &flow->flags);
+ 		nf_flow_offload_add(flow_table, flow);
++	} else {
++		printk("NOT doing HW offload\n");
+ 	}
+ 
+ 	return 0;
+@@ -317,6 +323,9 @@ void flow_offload_refresh(struct nf_flow
+ {
+ 	u32 timeout;
+ 
++	printk("flow_offload_refresh() called\n");
++	print_flow(flow);
++
+ 	timeout = nf_flowtable_time_stamp + flow_offload_get_timeout(flow);
+ 	if (timeout - READ_ONCE(flow->timeout) > HZ)
+ 		WRITE_ONCE(flow->timeout, timeout);
+@@ -338,6 +347,9 @@ static inline bool nf_flow_has_expired(c
+ static void flow_offload_del(struct nf_flowtable *flow_table,
+ 			     struct flow_offload *flow)
+ {
++	printk("flow_offload_del() called\n");
++	print_flow(flow);
++
+ 	rhashtable_remove_fast(&flow_table->rhashtable,
+ 			       &flow->tuplehash[FLOW_OFFLOAD_DIR_ORIGINAL].node,
+ 			       nf_flow_offload_rhash_params);
+@@ -349,6 +361,9 @@ static void flow_offload_del(struct nf_f
+ 
+ void flow_offload_teardown(struct flow_offload *flow)
+ {
++	printk("flow_offload_teardown() called\n");
++	print_flow(flow);
++
+ 	clear_bit(IPS_OFFLOAD_BIT, &flow->ct->status);
+ 	set_bit(NF_FLOW_TEARDOWN, &flow->flags);
+ 	flow_offload_fixup_ct(flow->ct);
+--- a/include/net/netfilter/nf_flow_table.h
++++ b/include/net/netfilter/nf_flow_table.h
+@@ -176,6 +176,13 @@ struct flow_offload {
+ 	struct rcu_head				rcu_head;
+ };
+ 
++enum flow_offload_api_event {
++	FLOW_OFFLOAD_API_ADD,
++	FLOW_OFFLOAD_API_REFRESH,
++	FLOW_OFFLOAD_API_DEL,
++	FLOW_OFFLOAD_API_TEARDOWN,
++};
++
+ #define NF_FLOW_TIMEOUT (30 * HZ)
+ #define nf_flowtable_time_stamp	(u32)jiffies
+ 
+@@ -276,6 +283,9 @@ void nf_flow_table_free(struct nf_flowta
+ 
+ void flow_offload_teardown(struct flow_offload *flow);
+ 
++int flow_offload_api_register_hook(int (*fn) (struct flow_offload *, enum flow_offload_api_event));
++int flow_offload_api_unregister_hook(int (*fn) (struct flow_offload *, enum flow_offload_api_event));
++
+ void nf_flow_snat_port(const struct flow_offload *flow,
+ 		       struct sk_buff *skb, unsigned int thoff,
+ 		       u8 protocol, enum flow_offload_tuple_dir dir);
+--- a/net/netfilter/nf_flow_table_offload.c
++++ b/net/netfilter/nf_flow_table_offload.c
+@@ -26,6 +26,49 @@ struct flow_offload_work {
+ 	struct work_struct	work;
+ };
+ 
++static void print_flow(struct flow_offload *flow) {
++	struct flow_offload_tuple *tuple;
++	int i;
++
++	for (i = 0; i < FLOW_OFFLOAD_DIR_MAX; i++) {
++		printk("Printing tuple %d\n", i);
++		tuple = &flow->tuplehash[i].tuple;
++
++		if (tuple->l3proto == NFPROTO_IPV4) {
++			printk("Offloading IPv4 connection: %pI4(%u) -> %pI4(%u), proto: %u, iifidx: %u\n",
++				&tuple->src_v4.s_addr, ntohs(tuple->src_port),
++				&tuple->dst_v4.s_addr, ntohs(tuple->dst_port),
++				tuple->l4proto, tuple->iifidx);
++		} else if (tuple->l3proto == NFPROTO_IPV6) {
++			printk("Offloading IPv4 connection: %pI6(%u) -> %pI6(%u), proto: %u, iifidx: %u\n",
++				tuple->src_v6.s6_addr, ntohs(tuple->src_port),
++				tuple->dst_v6.s6_addr, ntohs(tuple->dst_port),
++				tuple->l4proto, tuple->iifidx);
++		} else {
++			printk("WTF is this protocol %u\n", tuple->l3proto);
++		}
++
++		printk("encap info: %u %u | %u %u\n",
++			tuple->encap[0].id, ntohs(tuple->encap[0].proto),
++			tuple->encap[1].id, ntohs(tuple->encap[1].proto));
++
++		switch (tuple->xmit_type) {
++		case FLOW_OFFLOAD_XMIT_DIRECT:
++			printk("FLOW_OFFLOAD_XMIT_DIRECT: %pM -> %pM, %u %u\n",
++				tuple->out.h_source, tuple->out.h_dest, tuple->out.ifidx, tuple->out.hw_ifidx);
++			break;
++		case FLOW_OFFLOAD_XMIT_XFRM:
++		case FLOW_OFFLOAD_XMIT_NEIGH:
++			printk("FLOW_OFFLOAD_XMIT_NEIGH|XFRM: %s\n", tuple->dst_cache ?
++				tuple->dst_cache->dev->name : "dst_cache NULL");
++			break;
++		default:
++			WARN_ON_ONCE(1);
++			break;
++		}
++	}
++}
++
+ #define NF_FLOW_DISSECTOR(__match, __type, __field)	\
+ 	(__match)->dissector.offset[__type] =		\
+ 		offsetof(struct nf_flow_key, __field)
+@@ -950,6 +993,7 @@ static void flow_offload_work_stats(stru
+ 	}
+ }
+ 
++/* OFFLOAD WORK CALLBACK */
+ static void flow_offload_work_handler(struct work_struct *work)
+ {
+ 	struct flow_offload_work *offload;
+@@ -1013,6 +1057,8 @@ void nf_flow_offload_add(struct nf_flowt
+ {
+ 	struct flow_offload_work *offload;
+ 
++	flow_offload_api_call_hooks(flow, FLOW_OFFLOAD_API_ADD);
++
+ 	offload = nf_flow_offload_work_alloc(flowtable, flow, FLOW_CLS_REPLACE);
+ 	if (!offload)
+ 		return;
+@@ -1025,6 +1071,8 @@ void nf_flow_offload_del(struct nf_flowt
+ {
+ 	struct flow_offload_work *offload;
+ 
++	flow_offload_api_call_hooks(flow, FLOW_OFFLOAD_API_DEL);
++
+ 	offload = nf_flow_offload_work_alloc(flowtable, flow, FLOW_CLS_DESTROY);
+ 	if (!offload)
+ 		return;
+@@ -1043,6 +1091,8 @@ void nf_flow_offload_stats(struct nf_flo
+ 	if ((delta >= (9 * flow_offload_get_timeout(flow)) / 10))
+ 		return;
+ 
++	flow_offload_api_call_hooks(flow, FLOW_OFFLOAD_API_REFRESH);
++
+ 	offload = nf_flow_offload_work_alloc(flowtable, flow, FLOW_CLS_STATS);
+ 	if (!offload)
+ 		return;
+@@ -1179,6 +1229,69 @@ int nf_flow_table_offload_setup(struct n
+ }
+ EXPORT_SYMBOL_GPL(nf_flow_table_offload_setup);
+ 
++////////////////////////////////////////////////////////////////////////////////////
++#define FLOW_OFFLOAD_API_MAX 4
++
++static int flow_offload_api_hook_count = 0;
++
++int (*flow_offload_api_hooks[FLOW_OFFLOAD_API_MAX]) (struct flow_offload *, enum flow_offload_api_event);
++
++int flow_offload_api_register_hook(int (*fn) (struct flow_offload *, enum flow_offload_api_event))
++{
++	if (flow_offload_api_hook_count >= FLOW_OFFLOAD_API_MAX) {
++		printk("Flow offload API hook count %d/%d\n", flow_offload_api_hook_count, FLOW_OFFLOAD_API_MAX);
++		return -1;
++	}
++
++	flow_offload_api_hooks[flow_offload_api_hook_count] = fn;
++	printk("flow_offload_api_register_hook() added fn: %px, len: %d\n",
++		flow_offload_api_hooks[flow_offload_api_hook_count],
++		flow_offload_api_hook_count);
++
++	flow_offload_api_hook_count += 1;
++	return 0;
++}
++EXPORT_SYMBOL_GPL(flow_offload_api_register_hook);
++
++int flow_offload_api_unregister_hook(int (*fn) (struct flow_offload *, enum flow_offload_api_event))
++{
++	int i, j;
++	bool found = false;
++
++	// Find the item in the array
++	for (i = 0; i < flow_offload_api_hook_count; i++) {
++		printk("flow_offload_api_unregister_hook: array %px - fn %px\n", flow_offload_api_hooks[i], fn);
++		if (flow_offload_api_hooks[i] == fn) {
++			found = true;
++			break;
++		}
++	}
++
++	if (!found) {
++		printk("flow_offload_api_unregister_hook: %px not in the array\n", fn);
++		return -1;
++	}
++
++	flow_offload_api_hook_count -= 1;
++
++	// If the item is found, delete it
++	for (j = i; j < flow_offload_api_hook_count; j++) {
++		flow_offload_api_hooks[j] = flow_offload_api_hooks[j + 1];
++	}
++
++	printk("flow_offload_api_unregister_hook() removed fn: %px, len: %d\n", fn, flow_offload_api_hook_count);
++	return 0;
++}
++EXPORT_SYMBOL_GPL(flow_offload_api_unregister_hook);
++
++int flow_offload_api_call_hooks(struct flow_offload *flow, enum flow_offload_api_event event) {
++	for (i = 0; i < flow_offload_api_hook_count; i++) {
++		flow_offload_api_hooks[i](flow, event);
++	}
++}
++
++////////////////////////////////////////////////////////////////////////////////////
++
+ int nf_flow_table_offload_init(void)
+ {
+ 	nf_flow_offload_add_wq  = alloc_workqueue("nf_ft_offload_add",

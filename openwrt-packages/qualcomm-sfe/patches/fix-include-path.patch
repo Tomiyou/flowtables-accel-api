@@ -1,0 +1,8 @@
+--- a/Makefile
++++ b/Makefile
+@@ -28,4 +28,4 @@ endif
+ ifdef SFE_PROCESS_LOCAL_OUT
+ ccflags-y += -DSFE_PROCESS_LOCAL_OUT
+ endif
+-ccflags-y += -Werror -Wall -Iexports/
++ccflags-y += -Werror -Wall -I$(src)/exports/

@@ -1,0 +1,20 @@
+--- a/sfe.c
++++ b/sfe.c
+@@ -172,7 +172,7 @@ inline bool sfe_dev_is_layer_3_interface
+ 		 * Does it have an IPv4 address?  If it doesn't then it could be MAP-T interface,
+ 		 * else we can't do anything interesting here!
+ 		 */
+-		if (likely(in4_dev->ifa_list || (dev->priv_flags_ext & IFF_EXT_MAPT))) {
++		if (likely(in4_dev->ifa_list)) {
+ 			return true;
+ 		}
+ 		return false;
+@@ -190,7 +190,7 @@ inline bool sfe_dev_is_layer_3_interface
+ 	 * Does it have an IPv6 address?  If it doesn't then it could be MAP-T interface,
+ 	 * else we can't do anything interesting here!
+ 	 */
+-	if (likely(!list_empty(&in6_dev->addr_list) || (dev->priv_flags_ext & IFF_EXT_MAPT))) {
++	if (likely(!list_empty(&in6_dev->addr_list))) {
+ 		return true;
+ 	}
+ 
